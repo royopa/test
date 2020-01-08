@@ -1,0 +1,17 @@
+2019-10-23 10:26:46,603 [MainThread  ] [root      ] [INFO ]  Bloomberg update routine - 23-10-2019
+2019-10-23 10:26:46,606 [MainThread  ] [root      ] [INFO ]  BLOOMBERG HISTORY ROUTINE - UPDATE since 08-10-2019
+2019-10-23 10:26:46,689 [MainThread  ] [root      ] [INFO ]  library =assetVS
+2019-10-23 10:37:37,853 [MainThread  ] [root      ] [INFO ]  Bloomberg update routine - 23-10-2019
+2019-10-23 10:37:37,854 [MainThread  ] [root      ] [INFO ]  BLOOMBERG HISTORY ROUTINE - UPDATE since 08-10-2019
+2019-10-23 10:37:37,910 [MainThread  ] [root      ] [INFO ]  library =assetVS
+2019-10-23 10:40:39,348 [MainThread  ] [root      ] [INFO ]  Bloomberg update routine - 23-10-2019
+2019-10-23 10:40:39,351 [MainThread  ] [root      ] [INFO ]  BLOOMBERG HISTORY ROUTINE - UPDATE since 08-10-2019
+2019-10-23 10:40:39,387 [MainThread  ] [root      ] [INFO ]  library =assetVS
+2019-10-23 11:34:21,691 [MainThread  ] [root      ] [INFO ]  Bloomberg update routine - 23-10-2019
+2019-10-23 11:34:21,694 [MainThread  ] [root      ] [INFO ]  BLOOMBERG HISTORY ROUTINE - UPDATE since 08-10-2019
+2019-10-23 11:41:13,329 [MainThread  ] [root      ] [INFO ]  library =assetVS
+2019-10-23 12:16:50,282 [MainThread  ] [root      ] [INFO ]  Bloomberg update routine - 23-10-2019
+2019-10-23 12:16:50,285 [MainThread  ] [root      ] [INFO ]  BLOOMBERG HISTORY ROUTINE - UPDATE since 08-10-2019
+2019-10-23 12:17:06,243 [MainThread  ] [root      ] [INFO ]  library =assetVS
+2019-10-23 12:25:59,178 [MainThread  ] [arctic.arc] [INFO ]  Mongo Quota: arctic.assetVS 0.665 / 10 GB used
+2019-10-23 12:26:01,696 [MainThread  ] [arctic.ser] [WARNI]  Pandas dataframe KW1_1BDay contains Objects, saving as Blob
