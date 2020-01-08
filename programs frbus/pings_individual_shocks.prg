@@ -1,0 +1,918 @@
+' Execute eight ping simulations (AKA simple IRFs) 
+'
+' Notes:
+'
+' 1. Choose between VAR expectations and several MCE alternatives
+' with the %mcegroup parameter.
+'
+'   - %mcegroup = "none"   => VAR expectations everywhere
+'   - %mcegroup = "-mcap"   => MCE in asset pricing, VAR expectations elsewhere
+'   - %mcegroup = "-mcap+wp" => MCE in asset pricing and price-wage setting;
+'        VAR expectations elsewhere
+'   - %mcegroup = "-all"    => MCE everywhere
+'
+' Note that even when %mcegroup = "none", the program does many
+' of the setup steps for an MCE simulation even though it never
+' uses what they create.
+'
+' Also note that the length of the simulation period varies with the
+' setting of %mcegroup, with longer periods required when expectations
+' are MCE rather than VAR and, among the MCE options, a longer period
+' required with the -all option than for the other options.  See the 
+' Simulation Basics document for further discussion.
+'
+' Also note that when %mcegroup = "-all", the "terminal" option for the
+' mce_run subroutine is invoked so that the IRFs especially to the
+' the shock to multifactor productivity growth are acceptable.  See
+' the Simulation Basics document for a discussion of terminal 
+' conditions.
+' 
+
+' 2. Seven of the pings are one-time shocks to the residual of an
+' equation whose structure contains a large autoregressive
+' element.  The remaining ping involves a permanent increase in the
+' level of trend MFP.
+
+' 3. Choose among the 8 possible shocks (%ping):
+'
+'   - rff : A X basis point upward shock to the rffintay monetary
+'     policy rule
+!shock_rff = 100
+'   - eg : An increase in federal purchases equal to X percent of
+'     baseline GDP
+!shock_eg = 1
+'   - reqp : A X bp increase in the equity premium
+!shock_reqp = 100
+'   - oil : A $X per barrel increase in the price of oil
+!shock_oil = 10
+'   - mfp : A X percent (ar) increase in the growth rate of multifactor productivity
+!shock_mfp = 1
+'   - hmfpt : A X percent permanent increase in the level of trend MPF 
+!shock_hmfp = 1
+'   - prem : Increases of X basis points to the 10-year Treasury term premium, 
+'     Y basis points to the 5-year premium, and Z basis points to the 30-year premium 
+!shock_rg5p = 75
+!shock_rg10p = 100
+!shock_rg30p = 30
+'   - exch : A X percent increase in the (real) exchange rate
+!shock_exch = 10
+
+%ping = "oil"
+
+' *************************************************************
+' Initial filename and parameter settings
+' *************************************************************
+
+' Subroutines
+  include ../subs/master_library
+  include ../subs/mce_solve_library
+
+' Workfile    
+  %wfstart = "1975q1"
+  %wfend = "2125q4"
+  %mainpage = "main"
+wfclose(noerr)
+  wfcreate(wf=aaa,page={%mainpage}) q {%wfstart} {%wfend}
+
+' FRB/US model names and locations
+  %varmod = "stdver"
+  %mcemod = "pfver"
+  %model_path = "../mods/model.xml"
+' Input datbase
+%dbin  = "../data/longbase"
+' MC expectations option ("none",-mcap","-mcap+wp","-all")
+  %mcegroup = "none"
+
+' Simulation start and length (varies by expectations option)
+  %simstart = "2020q1"
+  if %mcegroup = "none" then
+    !nsimqtrs = 10*4
+    else
+    if %mcegroup = "-all" then
+      !nsimqtrs = 90*4
+      else
+      !nsimqtrs = 60*4
+      endif
+    endif
+  call dateshift(%simstart,%simend,!nsimqtrs-1)
+
+' Number of quarters to show in graphs
+  !graphqtrs = 40
+
+
+' ****************************************************************
+' Retrieve data, model equations and coefficients, set
+' policy options, and compute tracking residuals 
+' ****************************************************************
+
+' Load equations and coefficients
+  if %mcegroup = "none" then
+  ' declare a single variable to be MC (which will not be used in 
+  ' the end) so that some of the code below will work correctly
+    %mcegroup = "zpic58"
+    %exp = "var"
+    else
+    %exp = "mc"
+    endif
+  read_xml_model(path=%model_path,mce_vars=%mcegroup,mod_f=%mcemod)
+
+' Load data
+  dbopen %dbin as longdata
+  fetch(d=longdata) *
+
+' Data for extra variables associated with MC expectations
+  smpl @all
+  call mce_create_auxillary(m_zvars)
+
+  statusline policy, tracking
+' Set monetary policy
+  smpl @all
+  call set_mp("dmpintay")
+
+' Turn off zero bound and policy thresholds; hold policymaker's
+' perceived equilibrium real interest rate constant for first 40
+' quarters
+  smpl @all
+  dmptrsh = 0
+  rffmin = -9999
+  drstar = 0
+  smpl %simstart + 39 %simend
+  drstar = 1
+
+' Set fiscal policy
+  smpl @all
+  call set_fp("dfpsrp")
+
+' Set _aerr variables to zero
+  smpl @all
+  {%varmod}.makegroup(a,n) endog @endog
+  call groupnew("endog","_aerr")
+  call group2zero("endog_aerr")
+
+' Standard solution options
+  {%varmod}.solveopt(o=b,g=12,z=1e-12)
+  {%mcemod}.solveopt(o=b,g=12,z=1e-12)
+
+' Assign baseline tracking add factors
+  %suftrk = "_0"
+  smpl %simstart %simend 
+  {%varmod}.addassign @all
+  {%varmod}.addinit(v=n) @all
+  {%varmod}.scenario(n,a={%suftrk}) "track"
+  {%varmod}.solve
+  scalar mm = @max(@abs(xgap{%suftrk}-xgap))
+  if mm > .0001 then
+    statusline dynamic tracking simulation failed for {%varmod}
+    stop
+    endif
+  {%mcemod}.addassign @all
+  {%mcemod}.addinit(v=n) @all
+
+' If expectations are MCE, make backup copy of endogenous variables
+  if %mcegroup <> "none" then
+    smpl %simend + 1 %simend + 20
+    call group2group("endog","_bac","suffix")
+    endif
+
+
+  
+' ****************************************************************
+' Ping simulations
+' ****************************************************************
+  statusline simulations
+  %suf = "_1"
+  {%varmod}.scenario(n,a={%suf}) "ping"
+  {%mcemod}.scenario(n,a={%suf}) "ping"
+  
+' **********************************
+' Federal Funds Rate: RFF ping 
+
+  %ping2 = "rff"
+
+  smpl %simstart %simstart
+  rffintay_aerr = rffintay_aerr + !shock_rff/100
+  call simit
+  smpl %simstart %simstart
+  rffintay_aerr = rffintay_aerr - !shock_rff/100
+  call copyit
+
+' **********************************
+' Federal Purchases: EGFE ping
+
+  %ping2 = "eg"
+  smpl %simstart %simstart
+  egfe_aerr = egfe_aerr + !shock_eg/100*xgdpn/egfen
+  call simit
+  smpl %simstart %simstart
+  egfe_aerr = egfe_aerr - !shock_eg/100*xgdpn/egfen
+  call copyit
+  smpl %simstart %simend
+  series egfen_shr_{%ping} = 100*(egfen{%suf}/xgdpn{%suf} - egfen/xgdpn)
+
+' **********************************
+' Equity Premium: REQP ping
+
+  %ping2 = "reqp"
+  smpl %simstart %simstart
+  reqp_aerr = reqp_aerr + !shock_reqp/100
+  call simit
+  smpl %simstart %simstart
+  reqp_aerr = reqp_aerr - !shock_reqp/100
+  call copyit
+  smpl %simstart %simend
+  series reqp_{%ping} = reqp{%suf} - reqp
+
+
+' **********************************
+' Oil Prices: POILR ping
+
+  %ping2 = "oil"
+  smpl %simstart %simstart
+  poilr_aerr = poilr_aerr + !shock_oil/pxb
+  call simit
+  smpl %simstart %simstart
+  poilr_aerr = poilr_aerr - !shock_oil/pxb
+  call copyit
+  smpl %simstart %simend
+  series poil_{%ping} = poil{%suf} - poil
+
+
+
+' **********************************
+' MFPT ping
+
+  %ping2 = "mfp"
+  smpl %simstart %simstart
+  mfpt_aerr = mfpt_aerr + !shock_mfp/100
+  call simit
+  smpl %simstart %simstart
+  mfpt_aerr = mfpt_aerr - !shock_mfp/100
+  call copyit
+  smpl %simstart %simend
+  series mfpt_{%ping} = 100*(mfpt{%suf}/mfpt - 1)
+
+
+
+' **********************************
+' HMFPT ping
+
+  %ping2 = "hmfp"
+  smpl %simstart %simstart
+  hmfpt_aerr = hmfpt_aerr + !shock_hmfp
+  call simit
+  smpl %simstart %simstart
+  hmfpt_aerr = hmfpt_aerr - !shock_hmfp
+  call copyit
+  smpl %simstart %simend
+  series hmfpt_{%ping} = hmfpt{%suf} - hmfpt
+
+
+' **********************************
+' Treasury Term Premium: RG10P, RG5P, and RG30P ping 
+
+  %ping2 = "prem"
+  smpl @all
+  series rg30p_aerr = 0
+  smpl %simstart %simstart
+  rg10p_aerr = rg10p_aerr + !shock_rg10p/100
+  rg5p_aerr = rg5p_aerr + !shock_rg5p/100
+  rg30p_aerr = rg30p_aerr + !shock_rg30p/100
+  call simit
+  smpl %simstart %simstart
+  rg10p_aerr = rg10p_aerr - !shock_rg10p/100
+  rg5p_aerr = rg5p_aerr - !shock_rg5p/100
+  rg30p_aerr = rg30p_aerr - !shock_rg30p/100
+  call copyit
+  smpl %simstart %simend
+  series rg10p_{%ping} = rg10p{%suf} - rg10p
+  series rg5p_{%ping}   = rg5p{%suf} - rg5p
+  series rg30p_{%ping} = rg30p{%suf} - rg30p
+
+' **********************************
+' Exchange Rate: FPXRR ping
+
+  %ping2 = "exch"
+  smpl %simstart %simstart
+  series shock_fpxr = log(1 + !shock_exch/100)
+  fpxrr_aerr = fpxrr_aerr + shock_fpxr
+  call simit
+  smpl %simstart %simstart
+  fpxrr_aerr = fpxrr_aerr - shock_fpxr
+  call copyit
+  smpl %simstart %simend
+  series fpxr_{%ping} = fpxr{%suf} - fpxr 
+
+' ****************************************************************
+' Individual ping graphs
+' ****************************************************************
+ call graphit
+
+
+' ****************************************************************
+' Composite figures
+' ****************************************************************
+
+ if %mcegroup = "zpic58" then
+   %exp = "VAR Expectations"
+   endif
+ if %mcegroup = "-mcap" then
+   %exp = "MC (MCAP) Expectations"
+   endif
+ if %mcegroup = "-mcap+wp" then
+   %exp = "MC (MCAP+WP) Expectations"
+   endif
+ if %mcegroup = "-all" then
+   %exp = "MC (ALL) Expectations"
+   endif
+
+ %t1 = "FRB/US Ping Simulations:  " + %exp + " - Household Expenditure"
+ %t2 = "FRB/US Ping Simulations:  " + %exp + " - Business Expenditure"
+ %t3 = "FRB/US Ping Simulations:  " + %exp + " - Foreign Trade"
+ %t4 = "FRB/US Ping Simulations:  " + %exp + " - Aggregate Output"
+ %t5 = "FRB/US Ping Simulations:  " + %exp + " - Labor Market"
+ %t6 = "FRB/US Ping Simulations:  " + %exp + " - Nominal Income"
+ %t7 = "FRB/US Ping Simulations:  " + %exp + " - Wages and Prices"
+ %t8 = "FRB/US Ping Simulations:  " + %exp + " - Financial Sector"
+
+' Figure 1 - Household Expenditure
+
+ graph fig_1.merge gr_{%ping}_hh_exp1 gr_{%ping}_hh_exp2
+ fig_1.align(3,.4,1.0)
+ fig_1.addtext(t,just(c),font(12)) %t1
+  show fig_1
+
+' Figure 2 - Business Expenditure
+
+  graph fig_2.merge gr_{%ping}_bs_exp1 gr_{%ping}_bs_exp2
+  fig_2.align(3,.4,1.0)
+  fig_2.addtext(t,just(c),font(12)) %t2
+  show fig_2
+
+' Figure 3 - Foreign Trade
+
+  graph fig_3.merge gr_{%ping}_for_td1 gr_{%ping}_for_td2 gr_{%ping}_for_td3
+  fig_3.align(3,.4,1.0)
+  fig_3.addtext(t,just(c),font(12)) %t3
+  show fig_3
+
+' Figure 4 - Aggregate Output
+
+  graph fig_4.merge gr_{%ping}_agg_out1 gr_{%ping}_agg_out2
+  fig_4.align(3,.4,1.0)
+  fig_4.addtext(t,just(c),font(12)) %t4
+  show fig_4
+
+' Figure 5 - Labor Market
+
+  graph fig_5.merge gr_{%ping}_lab_mkt1 gr_{%ping}_lab_mkt2 gr_{%ping}_lab_mkt3
+  fig_5.align(3,.4,1.0)
+  fig_5.addtext(t,just(c),font(12)) %t5
+  show fig_5
+
+' Figure 6 - Nominal Income
+
+  graph fig_6.merge gr_{%ping}_nom_inc1 gr_{%ping}_nom_inc2
+  fig_6.align(3,.4,1.0)
+  fig_6.addtext(t,just(c),font(12)) %t6
+  show fig_6
+
+' Figure 7 - Wages and Prices
+
+  graph fig_7.merge gr_{%ping}_wg_pc1
+  fig_7.align(3,.4,1.0)
+  fig_7.addtext(t,just(c),font(12)) %t7
+  show fig_7
+
+' Figure 8 - Financial Sector
+
+  graph fig_8.merge gr_{%ping}_fin_sec1 gr_{%ping}_fin_sec2 gr_{%ping}_fin_sec3
+  fig_8.align(3,.4,1.0)
+  fig_8.addtext(t,just(c),font(12)) %t8
+  show fig_8
+
+
+  group clioutput_1 ec_rff eco_rff ecd_rff
+  wfsave(type=excel, mode=update) "F:\DADOS\ASSET\MACROECONOMIA\1PIETRO\frbus_package\data_output\pings_individual_shocks.xlsx" range="Sheet1!a1" byrow
+
+'************************************************************
+'************************************************************
+'************************************************************
+  subroutine graphit
+
+  smpl %simstart %simstart + !graphqtrs - 1
+  series zero = 0
+
+  delete(noerr) gr_*
+
+if (%ping == "rff") then %shock = "Funds Rate" endif
+if (%ping == "eg") then %shock = "Federal Purch" endif
+if (%ping == "reqp") then %shock = "Equity Premium" endif
+if (%ping == "oil") then %shock = "Oil Price" endif
+if (%ping == "mfp") then %shock = "MFP Level" endif
+if (%ping == "hmfp") then %shock = "MFP Growth" endif
+if (%ping == "prem") then %shock = "Term Premium" endif
+if (%ping == "exch") then %shock = "Exchange Rate" endif
+
+'Shock Variable
+  %name = %ping+%ping
+
+if (%ping == "exch") then %var1 = "fpxr_" + %ping endif
+if (%ping == "hmpf") then %var1 = "hmfpt_" + %ping endif
+if (%ping == "mfp") then %var1 = "mfpt_" + %ping endif
+if (%ping == "oil") then %var1 = "poil_" + %ping endif
+if (%ping == "eg") then %var1 = "egfen_" + %ping endif
+
+  %name =  %ping+%ping
+  %tt = "Shock on " + %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+
+'Household Expenditures
+  %name = %ping + "hh1"
+  %var1 =  "ec_" + %ping
+  %tt = "Response of Consumption\rto "+ %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+
+  %name = %ping + "hh2"
+  %var1 =  "eco_" + %ping
+  %tt = "Response of Non-durables and\r Non-housing Consumption to "+ %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+
+  %name = %ping + "hh3"
+  %var1 =  "ecd_" + %ping
+  %tt = "Response of Durables Consumption\rto "+ %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+
+  %name = %ping + "hh4"
+  %var1 =  "ech_" + %ping
+  %tt = "Response of Housing Consumption\rto "+ %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+
+  %name = %ping + "hh5"
+  %var1 =  "eh_" + %ping
+  %tt = "Response of Housing Services\rto "+ %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+
+  graph gr_{%ping}_hh_exp1.merge  {%ping}{%ping} {%ping}hh1 {%ping}hh2
+  gr_{%ping}_hh_exp1.align(3,.40,.40)
+
+  graph gr_{%ping}_hh_exp2.merge  {%ping}hh3 {%ping}hh4 {%ping}hh5
+  gr_{%ping}_hh_exp2.align(3,.40,.40)
+
+
+
+'Business Expenditures
+  %name = %ping + "bs1"
+  %var1 =  "ebfi_" + %ping
+  %tt = "Response of Business Fixed Investment\rto "+ %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+
+  %name = %ping + "bs2"
+  %var1 =  "ei_" + %ping
+  %tt = "Response of Change in Private Inventories\rto "+ %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+'
+  %name = %ping + "bs3"
+  %var1 =  "kbfi_" + %ping
+  %tt = "Response of Capital Stock\rto "+ %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+
+  %name = %ping + "bs4"
+  %var1 =  "ki_" + %ping
+  %tt = "Response of Capital Stock\r(non-residential) to "+ %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+
+  %name = %ping + "bs5"
+  %var1 =  "ks_" + %ping
+  %tt = "Response of Capital Services\rto "+ %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+
+  graph gr_{%ping}_bs_exp1.merge  {%ping}{%ping} {%ping}bs1 {%ping}bs2
+  gr_{%ping}_bs_exp1.align(3,.40,.40)
+
+  graph gr_{%ping}_bs_exp2.merge  {%ping}bs3 {%ping}bs4 {%ping}bs5
+  gr_{%ping}_bs_exp2.align(3,.40,.40)
+  
+
+
+'Foreign Trade
+  %name = %ping + "ft1"
+  %var1 =  "em_" + %ping
+  %tt = "Response of Imports of Goods\rand Servicesto "+ %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+
+  %name = %ping + "ft2"
+  %var1 =  "emo_" + %ping
+  %tt = "Response of Imports of Goods\rand Services (ex. petroleum) to "+ %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+
+  %name = %ping + "ft3"
+  %var1 =  "emp_" + %ping
+  %tt = "Response of Imports of Petroleum\rto "+ %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+
+  %name = %ping + "ft4"
+  %var1 =  "hgemp_" + %ping
+  %tt = "Response of Trend Growth\rof Petroleum Imports to "+ %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+
+  %name = %ping + "ft5"
+  %var1 =  "ex_" + %ping
+  %tt = "Response of Exports of Goods\rand Services\rto "+ %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+
+  %name = %ping + "ft6"
+  %var1 =  "fcbn_" + %ping
+  %tt = "Response of US Current Account\rBalance to "+ %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+
+  %name = %ping + "ft7"
+  %var1 =  "fynin_" + %ping
+  %tt = "Response of Net Investment\rIncome received\rfrom the rest of the world to "+ %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+
+  graph gr_{%ping}_for_td1.merge  {%ping}{%ping} {%ping}ft1 {%ping}ft2
+  gr_{%ping}_for_td1.align(3,.40,.40)
+
+  graph gr_{%ping}_for_td2.merge  {%ping}ft3 {%ping}ft4 {%ping}ft5
+  gr_{%ping}_for_td2.align(3,.40,.40)
+
+  graph gr_{%ping}_for_td3.merge  {%ping}ft6 {%ping}ft7
+  gr_{%ping}_for_td3.align(3,.40,.40)
+
+
+
+'Aggregate Output
+  %name = %ping + "ao1"
+  %var1 =  "xgdo_" + %ping
+  %tt = "Response of GDP\rto "+ %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+
+  %name = %ping + "ao2"
+  %var1 =  "hggdp_" + %ping
+  %tt = "Response of Growth Rate of GDP\rto "+ %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+
+  %name = %ping + "ao3"
+  %var1 =  "xgap2_" + %ping
+  %tt = "Response of Output Gap for GDP\rto "+ %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+
+  %name = %ping + "ao4"
+  %var1 =  "xbo_" + %ping
+  %tt = "Response of Business Output\rto "+ %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+
+  %name = %ping + "ao5"
+  %var1 =  "xgap_" + %ping
+  %tt = "Response of Output Gap for Busines plus\rOil Imports to "+ %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+
+
+  graph gr_{%ping}_agg_out1.merge  {%ping}{%ping} {%ping}ao1 {%ping}ao2
+  gr_{%ping}_agg_out1.align(3,.40,.40)
+
+  graph gr_{%ping}_agg_out2.merge  {%ping}ao3 {%ping}ao4 {%ping}ao5
+  gr_{%ping}_agg_out2.align(3,.40,.40)
+
+
+
+'Labor Market
+  %name = %ping + "lb1"
+  %var1 =  "leh_" + %ping
+  %tt = "Response of Employment\rto "+ %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+
+  %name = %ping + "lb2"
+  %var1 =  "leo_" + %ping
+  %tt = "Response of Difference between \rHousehold and Business Sector,\rless Government Employment to "+ %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+
+  %name = %ping + "lb3"
+  %var1 =  "lep_" + %ping
+  %tt = "Response of Employment in \rBusiness Sector to "+ %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+
+  %name = %ping + "lb4"
+  %var1 =  "lfpr_" + %ping
+  %tt = "Response of Labor Force\rParticipation Rate to "+ %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+
+  %name = %ping + "lb5"
+  %var1 =  "lhp_" + %ping
+  %tt = "Response of Aggregate Labor Hours\rto "+ %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+
+  %name = %ping + "lb6"
+  %var1 =  "lur_" + %ping
+  %tt = "Response of Unemployment Rate\rto "+ %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+
+  %name = %ping + "lb7"
+  %var1 =  "lurnat_" + %ping
+  %tt = "Response of Natural Rate of\rUnemployment to "+ %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+
+
+  graph gr_{%ping}_lab_mkt1.merge  {%ping}{%ping} {%ping}lb1 {%ping}lb2
+  gr_{%ping}_lab_mkt1.align(3,.40,.40)
+
+  graph gr_{%ping}_lab_mkt2.merge  {%ping}lb3 {%ping}lb4 {%ping}lb5
+  gr_{%ping}_lab_mkt2.align(3,.40,.40)
+
+  graph gr_{%ping}_lab_mkt3.merge  {%ping}lb6 {%ping}lb7
+  gr_{%ping}_lab_mkt3.align(3,.40,.40)
+
+
+
+'Nominal Income
+  %name = %ping + "ni1"
+  %var1 =  "yhsn_" + %ping
+  %tt = "Response of Personal Saving\rto "+ %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+
+  %name = %ping + "ni2"
+  %var1 =  "rspnia_" + %ping
+  %tt = "Response of Personal Saving Rate\rto "+ %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+
+  %name = %ping + "ni3"
+  %var1 =  "yh_" + %ping
+  %tt = "Response of Total Household Income\r(real, after tax) to "+ %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+
+  %name = %ping + "ni4"
+  %var1 =  "yhl_" + %ping
+  %tt = "Response of  Household Labor Compensation\rIncome (real, after tax) to "+ %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+
+  %name = %ping + "ni5"
+  %var1 =  "yhp_" + %ping
+  %tt = "Response of  Household Assets Income\r(real, after tax) to "+ %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+
+  %name = %ping + "ni6"
+  %var1 =  "ks_" + %ping
+  %tt = "Response of Household Transfera Income\r(real, after tax) to "+ %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+
+  graph gr_{%ping}_nom_inc1.merge  {%ping}{%ping} {%ping}ni1 {%ping}ni2
+  gr_{%ping}_nom_inc1.align(3,.40,.40)
+
+  graph gr_{%ping}_nom_inc2.merge  {%ping}ni3 {%ping}ni4 {%ping}ni5 {%ping}ni6
+  gr_{%ping}_nom_inc2.align(3,.40,.40)
+
+
+
+'Wages and Prices
+  %name = %ping + "wp1"
+  %var1 =  "picnia_" + %ping
+  %tt = "Response of Inflation Rate\r(Personal Consumption\rExpenditures) to "+ %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+
+  %name = %ping + "wp2"
+  %var1 =  "picxfe_" + %ping
+  %tt = "Response of Inflation Rate\r(PersonalConsumption Expenditures,\rex food and energy) to "+ %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+
+  %name = %ping + "wp3"
+  %var1 =  "pigdp_" + %ping
+  %tt = "Response of Inflation Rate\r(GDP) to "+ %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+
+  graph gr_{%ping}_wg_pc1.merge  {%ping}{%ping} {%ping}wp1 {%ping}wp2 {%ping}wp3
+  gr_{%ping}_wg_pc1.align(4,.40,.40)
+
+
+
+'Financial Sector
+  %name = %ping + "fs1"
+  %var1 =  "rbbbp_" + %ping
+  %tt = "Response of S&P BBB Corporate\rBond Rate (term/risk premium) to "+ %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+
+  %name = %ping + "fs2"
+  %var1 =  "reqp_" + %ping
+  %tt = "Response of Real Expected Rate of\rReturn on Equity\r(term/risk premium) to "+ %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+
+  %name = %ping + "fs3"
+  %var1 =  "yh_" + %ping
+  %tt = "Response of 5-year Treasury Bond Rate\r(term/risk premium) to "+ %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+
+  %name = %ping + "fs4"
+  %var1 =  "yhl_" + %ping
+  %tt = "Response of 10-year Treasury Bond Rate\r(term/risk premium) to "+ %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+
+  %name = %ping + "fs5"
+  %var1 =  "yhp_" + %ping
+  %tt = "Response of 30-year Treasury Bond Rate\r(term/risk premium) to "+ %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+
+  %name = %ping + "fs6"
+  %var1 =  "wpo_" + %ping
+  %tt = "Response of Household Property Wealth\r(ex. Stock Market) to "+ %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+
+  %name = %ping + "fs7"
+  %var1 =  "wps_" + %ping
+  %tt = "Response of Householod Stock Market\rto "+ %shock
+  call plotit(%name,"2","1.5",%var1,%tt,"percentage points")
+
+  graph gr_{%ping}_fin_sec1.merge  {%ping}{%ping} {%ping}fs1 {%ping}fs2
+  gr_{%ping}_fin_sec1.align(3,.40,.40)
+
+  graph gr_{%ping}_fin_sec2.merge  {%ping}fs3 {%ping}fs4 {%ping}fs5
+  gr_{%ping}_fin_sec2.align(3,.40,.40)
+
+  graph gr_{%ping}_fin_sec3.merge  {%ping}fs6 {%ping}fs7
+  gr_{%ping}_fin_sec3.align(3,.40,.40)
+
+
+
+
+  endsub
+
+
+'************************************************************
+'************************************************************
+'************************************************************
+  subroutine plotit(string %grname, string %width, string %height, string %var1, string %title, string %units)
+
+
+  graph {%grname}.line  {%var1} zero
+  {%grname}.options size({%width},{%height}) -inbox
+  {%grname}.setelem(1) linewidth(3) linepattern(1) linecolor(black)
+  {%grname}.addtext(t,just(c),font(9)) %title
+  {%grname}.addtext(0,-.15,font(8),just("r")) %units
+  {%grname}.datelabel format(yyyy)
+  {%grname}.legend -display
+  {%grname}.axis(b) font(9)
+  {%grname}.axis(l) font(9)
+
+  endsub
+
+
+'************************************************************
+'************************************************************
+'************************************************************
+  subroutine simit
+
+  smpl %simstart %simend
+  if %exp = "var" then
+    {%varmod}.solve
+    else
+    smpl %simend + 1 %simend + 10
+    call group2group("endog_bac","endog","group")
+    smpl %simstart %simend
+    %modstr = "mod_b=%varmod,mod_f=%mcemod,mce_vars=m_zvars"
+    %algstr = "meth=qnewton"
+    %simstr = "type=single,solveopt=%sopt,suf=" + %suf
+    if %mcegroup = "-all" then
+      %simstr = %simstr + ",terminal"
+      endif
+    call mce_run(%modstr,%algstr,%simstr)
+    endif
+  endsub
+
+'************************************************************
+'************************************************************
+'************************************************************
+  subroutine copyit
+
+  smpl %simstart %simend
+
+
+' Household Expenditures
+  series ec_{%ping2} = ec{%suf} - ec 						'Consumption
+  series eco_{%ping2} = eco{%suf} - eco					'Consumer expenditures on non-durables and non-housing services
+  series ecd_{%ping2} = ecd{%suf} - ecd					'Consumer expenditures on durable goods
+  series ech_{%ping2} = ech{%suf} - ech					'Consumer expenditures on housing services
+  series eh_{%ping2} = eh{%suf} - eh						'Residential investment expenditures
+
+
+' Business Expenditures
+  series ebfi_{%ping2} = ebfi{%suf} - ebfi					'Business fixed investment
+  series ei_{%ping2} = ei{%suf} - ei							'Change in private inventories
+  series kbfi_{%ping2} = kbfi{%suf} - kbfi					'Capital stock
+  series ki_{%ping2} = ki{%suf} - ki							'Capital stock - non resisdential structures
+  series ks_{%ping2} = ks{%suf} - ks						'Capital services
+
+
+' Foreign Trade
+  series em_{%ping2} = em{%suf} - em					'Imports of goods and services
+  series emo_{%ping2} = emo{%suf} - emo				'Imports of goods and services ex. petroleum
+  series emp_{%ping2} = emp{%suf} - emp				'Petroleum imports
+  series hgemp_{%ping2} = hgemp{%suf} - hgemp	'Trend growth of petroleum imports
+
+  series ex_{%ping2} = ex{%suf} - ex						'Export of good and services
+  series fcbn_{%ping2} = fcbn{%suf} - fcbn				'US current account balance (current $)
+  series fynin_{%ping2} = fynin{%suf} - fynin				'Net investment income received from the rest of the world (current $)
+
+
+' Aggregate Output
+  series xgdp_{%ping2} = xgdp{%suf} - xgdp				'GDP
+  series xgdpt_{%ping2} = xgdpt{%suf} - xgdpt			'Potential GDP
+  series hggdp_{%ping2} = hggdp{%suf} - hggdp		'Growth rate of GDP
+
+  series xbo_{%ping2} = xbo{%suf} - xbo					'Business output, adjusted for measurement error
+  series xbt_{%ping2} = xbt{%suf} - xbt						'Potential business output
+  series xgap_{%ping2} = xgap{%suf} - xgap				'Output gap for business plus oil imports
+
+  series xgdo_{%ping2} = xgdo{%suf} - xgdo				'Gross domestic product, adjusted for measurement error
+  series xgdpt_{%ping2} = xgdpt{%suf} - xgdpt			'Potential gross domestic product
+  series xgap2_{%ping2} = xgap2{%suf} - xgap2			'Output gap for GDP
+
+
+' Labor Market
+  series leh_{%ping2} = leh{%suf} - leh					'Civilian employment (break adjusted)
+  series leo_{%ping2} = leo{%suf} - leo					'Difference between household and business sector payroll employment, less government employment
+  series lep_{%ping2} = lep{%suf} - lep					'Employment in business sector (employed and self-employed)			
+  series lfpr_{%ping2} = lfpr{%suf} - lfpr					'Labor force participation rate
+  series lhp_{%ping2} = lhp{%suf} - lhp					'Aggregate labor hours, business sector (employed and self-employed)
+  series lur_{%ping2} = lur{%suf} - lur						'Civilian unemployment rate (break adjusted)
+  series lurnat_{%ping2} = lurnat{%suf} - lurnat			'Natural rate of unemployment
+
+
+' Nominal Income
+  series rspnia_{%ping2} = rspnia{%suf} - rspnia		'Personal saving rate
+  series yhsn_{%ping2} = yhsn{%suf} - yhsn				'Personal saving
+
+  series yh_{%ping2} = yh{%suf} - yh						'Income, household, total (real, after tax)
+  series yhl_{%ping2} = yhl{%suf} - yhl						'Income, household, labor compensation (real, after tax)
+  series yhp_{%ping2} = yhp{%suf} - yhp					'Income, household, property (real, after tax)
+  series yht_{%ping2} = yht{%suf} - yht						'Income, household, transfer (real, after tax), net basis
+
+
+' Wages and Prices
+
+  series pcpi_{%ping2} = pcpi{%suf} - pcpi				'Consumer price index
+  series pcpix_{%ping2} = pcpix{%suf} - pcpix			'Consumer price index, excluding food and energy
+
+  series pcnia_{%ping2} = pcnia{%suf} - pcnia			'Price index for personal consumption expenditures
+  series pic4_{%ping2} = pic4{%suf} - pic4				'Four-quarter percent change in PCE prices
+  series picnia_{%ping2} = picnia{%suf} - picnia		'Inflation rate, personal consumption expenditures
+
+  series pcdr_{%ping2} = pcdr{%suf} - pcdr				'Price index for consumer durables (relative to PCNIA)
+  series pchr_{%ping2} = pchr{%suf} - pchr				'Price index for housing services (relative to PCNIA)
+  series pcor_{%ping2} = pcor{%suf} - pcor				'Price index for non-durable goodsand non-housing services (relative to PICNIA)
+
+  series pcxfe_{%ping2} = pcxfe{%suf} - pcxfe			'Price index for personal consumption expenditures excluding food and energy
+  series picx4_{%ping2} = picx4{%suf} - picx4			'Four quarter percent change core in PCE prices
+  series picxfe_{%ping2} = picxfe{%suf} - picxfe			'Inflation rate, personal consumption expenditures excluding food and energy
+
+  series pcer_{%ping2} = pcer{%suf} - pcer				'Price index for personal consumption expenditures on energy (relative to PCXFE)
+  series pcfr_{%ping2} = pcfr{%suf} - pcfr					'Price index for personal consumption expenditures on food (relative to PCXFE)
+
+  series pgdp_{%ping2} = pgdp{%suf} - pgdp			'Price index for GDP	
+  series pigdp_{%ping2} = pigdp{%suf} - pigdp			'Inflation rate, GDP	
+
+
+' Government
+  series egfe_{%ping2} = egfe{%suf} - egfe				'Federal government expenditures
+  series egfl_{%ping2} = egfl{%suf} - egfl					'Federal government employee compensation
+
+  series egse_{%ping2} = egfe{%suf} - egfe				'State and local government expenditures
+  series egsl_{%ping2} = egfl{%suf} - egfl				'State and local government employee compensation
+
+  series gfdbtnp_{%ping2} = gfdbtnp{%suf} - gfdbtnp	'Federal government debt stock held by the public (current)
+  series gfdbtn_{%ping2} = gfdbtn{%suf} - gfdbtn 		'Federal government debt stock (current)
+
+
+' Financial Sector
+  series rff_{%ping2} = rff{%suf} - rff							'Effective federal funds rate
+  series delrff_{%ping2} = delrff{%suf} - delrff			'Federal funds rate, first diff
+  series rffalt_{%ping2} = rffalt{%suf} - rffalt				'Effective federal funds rate (estimated policy rule)
+  series rffgen_{%ping2} = rffgen{%suf} - rffgen			'Effective federal funds rate (generalized reaction function)
+  series rffintay_{%ping2} = rffintay{%suf} - rffintay		'Effective federal funds rate (inertial Taylor rule)
+  series rfftay_{%ping2} = rfftay{%suf} - rfftay				'Effective federal funds rate (Taylor rule with output gap)
+  series rfftlr_{%ping2} = rfftlr{%suf} - rfftlr					'Effective federal funds rate (Taylor rule with unemployment gap)
+  series rffrule_{%ping2} = rffrule{%suf} - rffrule			'Effective federal funds rate (combination of policies)
+
+  series rbbb_{%ping2} = rbbb{%suf} - rbbb				'S&P BBB corporate bond rate
+  series rbbbp_{%ping2} = rbbbp{%suf} - rbbbp		'S&P BBB corporate bond rate, risk/term premium
+
+  series req_{%ping2} = req{%suf} - req					'Real expected rate of return on equity
+  series reqp_{%ping2} = reqp{%suf} - reqp				'Real expected rate of return on equity, premium component
+
+  series rg5_{%ping2} = rg5{%suf} - rg5  					'5-year treasury bond rate
+  series rg5p_{%ping2} = rg5p{%suf} - rg5p				'5-year treasury bond rate, term premium
+  series rg10_{%ping2} = rg10{%suf} - rg10				'10-year treasury bond rate
+  series rg10p_{%ping2} = rg10p{%suf} - rg10p		'10-year treasury bond rate, term premium
+  series rg30_{%ping2} = rg30{%suf} - rg30				'30-year treasury bond rate
+  series rg30p_{%ping2} = rg30p{%suf} - rg30p		'30-year treasury bond rate, term premium
+
+  series wpo_{%ping2} = wpo{%suf} - wpo  				'Household property wealth ex. stock market, real
+  series wps_{%ping2} = wps{%suf} - wps  				'Household stock market, real
+
+
+' Foreign Activity
+  series fgdp_{%ping2} = fgdp{%suf} - fgdp  				'Foreign aggregate GDP (world, bilateral export weights)
+  series fpi10_{%ping2} = fpi10{%suf} - fpi10  			'Foreign consumer price inflation (G10)
+  series fpic_{%ping2} = fpic{%suf} - fpic  					'Foreign consumer price inflation (G39, bilateral export weights)
+  series fxgap_{%ping2} = fxgap{%suf} - fxgap  			'Foreign output gap (world, bilateral export weights)
+
+  endsub
+
+
